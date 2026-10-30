@@ -1,0 +1,28 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+Empty ingress/egress lists together with the matching policyTypes mean deny-all for that
+direction. Fill both lists when enabling the policy.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . .Values.networkPolicy.labels .Values.networkPolicy.annotations) | nindent 2 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "webhook.selectorLabels" . | nindent 6 }}
+  {{- with .Values.networkPolicy.policyTypes }}
+  policyTypes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.networkPolicy.ingress }}
+  ingress:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.networkPolicy.egress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

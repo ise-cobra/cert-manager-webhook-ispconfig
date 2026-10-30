@@ -1,0 +1,25 @@
+# Build artifacts
+/webhook
+/webhook.exe
+*.exe
+*.test
+*.out
+coverage.*
+/dist/
+
+# Helm
+charts/**/charts/
+charts/**/*.tgz
+
+# Local test files
+/_out/
+
+# Kubeconfigs and key material never belong in the repository
+kubeconfig
+*.kubeconfig
+*.pem
+*.key
+
+# Editor
+.idea/
+.vscode/

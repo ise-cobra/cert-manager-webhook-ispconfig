@@ -1,0 +1,296 @@
+# Values for cert-manager-webhook-ispconfig.
+
+# Required. ACME solver API group, e.g. acme.example.com. Must be identical to
+# dns01.webhook.groupName in your issuer; it determines name and group of the APIService.
+groupName: ""
+
+# ---------------------------------------------------------------------------
+# Service configuration (passed to the container exclusively as environment variables)
+# ---------------------------------------------------------------------------
+webhook:
+  # TLS port of the extension API server; rendered as container port "https".
+  securePort: 8443
+  # Required. Default base URL of the ISPConfig DDNS API, e.g.
+  # https://ispconfig.example.com. Can be overridden per issuer via config.endpoint.
+  endpoint: ""
+  # Default timeout per DDNS call; can be overridden per issuer via config.httpTimeout
+  # (1s to 50s, in s or ms; the webhook rejects larger values).
+  httpTimeout: 30s
+  # Allows http:// endpoints. For development only, never in production.
+  allowInsecureEndpoint: false
+  log:
+    # Log level: debug, info, warn or error.
+    level: info
+    # Log format: auto (= json), json or text.
+    format: json
+  otel:
+    # OTLP endpoint, either "otel-collector:4317" or a URL such as
+    # "http://otel-collector:4317". Empty means no telemetry and no network traffic.
+    endpoint: ""
+    # Connect without TLS, even for an https:// URL. An http:// URL means clear text even
+    # when this is false.
+    insecure: false
+    # Fraction of sampled traces (0.0 to 1.0); 0 samples no root traces.
+    sampleRatio: 1.0
+
+# ---------------------------------------------------------------------------
+# Serving certificate of the webhook
+# ---------------------------------------------------------------------------
+webhookTLS:
+  # Directory where the Secret with tls.crt/tls.key is mounted read-only.
+  mountPath: /etc/webhook/tls
+  # Use an existing Secret instead of a chart-managed one. Empty = derived name
+  # <fullname>-webhook-tls. Requires certManager.enabled=false.
+  existingSecret: ""
+  certManager:
+    # Creates a self-signed Issuer, a CA Certificate, a CA Issuer and the serving
+    # Certificate. Set to false if the Secret is provided externally; then
+    # apiService.caBundle (or a CA injection annotation) must be set.
+    enabled: true
+    privateKey:
+      # Key algorithm of the CA and serving certificates.
+      algorithm: ECDSA
+      # Key size or curve size.
+      size: 256
+    ca:
+      # Validity of the chart-owned CA.
+      duration: 43800h
+      # Renewal lead time of the CA.
+      renewBefore: 8760h
+    serving:
+      # Validity of the serving certificate.
+      duration: 8760h
+      # Renewal lead time of the serving certificate.
+      renewBefore: 720h
+
+# ---------------------------------------------------------------------------
+# APIService (aggregation layer)
+# ---------------------------------------------------------------------------
+apiService:
+  # Priority of the API group relative to other aggregated groups.
+  groupPriorityMinimum: 1000
+  # Priority of the version within the group.
+  versionPriority: 15
+  # Base64-encoded CA bundle. Only needed if webhookTLS.certManager.enabled is false;
+  # otherwise cert-manager injects it via annotation.
+  caBundle: ""
+  # Additional annotations for the APIService.
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# cert-manager installation that is allowed to call the solver
+# ---------------------------------------------------------------------------
+certManager:
+  # Namespace of the cert-manager installation.
+  namespace: cert-manager
+  # ServiceAccount of the cert-manager controller.
+  serviceAccountName: cert-manager
+
+# ---------------------------------------------------------------------------
+# RBAC
+# ---------------------------------------------------------------------------
+rbac:
+  # Creates the Role/RoleBinding in kube-system, two ClusterRole/ClusterRoleBinding pairs and
+  # the ClusterRoleBinding to system:auth-delegator.
+  create: true
+  # Secrets holding DDNS tokens that the webhook may read. Must not be empty (enforced):
+  # anyone allowed to create an issuer chooses via config.endpoint where the webhook sends a
+  # Secret, so unrestricted read access would let them exfiltrate any hex-valued Secret of the
+  # issuer's namespace (ClusterIssuer: cert-manager's cluster resource namespace), even one they
+  # cannot read themselves.
+  secretResourceNames: ["ispconfig-ddns-token"]
+  # Explicit opt-in for an empty secretResourceNames, e.g. for installations with many
+  # issuers and changing Secret names.
+  acknowledgeUnrestrictedSecretAccess: false
+
+# ---------------------------------------------------------------------------
+# Image
+# ---------------------------------------------------------------------------
+image:
+  # Container image of the webhook.
+  repository: ghcr.io/ise-cobra/cert-manager-webhook-ispconfig
+  # Empty = .Chart.AppVersion.
+  tag: ""
+  # Takes precedence over tag, e.g. sha256:...
+  digest: ""
+  # Kubelet pull policy.
+  pullPolicy: IfNotPresent
+  # Pull secrets, e.g. [{name: regcred}].
+  pullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Deployment / pod
+# ---------------------------------------------------------------------------
+# Two replicas so that a single unavailable pod does not block certificate renewals.
+replicaCount: 2
+
+# Name overrides.
+nameOverride: ""
+fullnameOverride: ""
+
+# Labels/annotations added to every object of the chart.
+commonLabels: {}
+commonAnnotations: {}
+
+# Additional labels/annotations on the Deployment.
+deployment:
+  labels: {}
+  annotations: {}
+
+# Additional labels/annotations on the pod template. podLabels are not part of the
+# Deployment selector, so they can be changed with helm upgrade.
+podLabels: {}
+podAnnotations: {}
+
+# Additional environment variables, inserted BEFORE the chart's own ones. For a duplicate
+# name the last entry wins in Kubernetes, so the chart's own value takes precedence.
+extraEnvVars: []
+
+# Additional volumes/mounts. The chart adds the TLS Secret and /tmp itself.
+volumes: []
+volumeMounts: []
+
+# The service is lightweight; it only issues a few HTTP requests per challenge.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Probes use HTTPS on the secure port of the extension API server.
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: https
+    scheme: HTTPS
+  initialDelaySeconds: 10
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: https
+    scheme: HTTPS
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: https
+    scheme: HTTPS
+  periodSeconds: 3
+  timeoutSeconds: 3
+  failureThreshold: 20
+
+# Pod security context: non-root with fixed UID/GID. 65532 is the `nonroot` user of the
+# distroless base image, identical to USER in the Dockerfile.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container security context: no privileges, no capabilities, read-only root filesystem.
+containerSecurityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# Spreads the replicas across nodes. Only applies while topologySpreadConstraints is empty;
+# explicitly set constraints take precedence.
+podSpread:
+  enabled: true
+  topologyKey: kubernetes.io/hostname
+  # ScheduleAnyway so that a single-node cluster still starts both replicas.
+  whenUnsatisfiable: ScheduleAnyway
+
+# Raw scheduling settings; topologySpreadConstraints replaces podSpread.
+topologySpreadConstraints: []
+affinity: {}
+nodeSelector: {}
+tolerations: []
+priorityClassName: ""
+
+# Must exceed the time budget of a running challenge, otherwise the kubelet kills the pod
+# mid-request. Budget: preStop sleep (5s) + httpTimeout (max. 50s) + 5s Secret lookup + 5s
+# telemetry flush when OTel is enabled.
+terminationGracePeriodSeconds: 70
+
+# preStop sleep before the process receives SIGTERM: the kube-apiserver stops routing
+# immediately, but Service/kube-proxy need a few seconds to remove the pod from the endpoint
+# slice. `sleep` is a native kubelet action (no binary needed in the container), beta since
+# Kubernetes 1.30. Counted against terminationGracePeriodSeconds.
+lifecycleHooks:
+  preStop:
+    sleep:
+      seconds: 5
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  labels: {}
+  annotations: {}
+  # The first port is the one the APIService connects to.
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+
+# ---------------------------------------------------------------------------
+# ServiceAccount
+# ---------------------------------------------------------------------------
+serviceAccount:
+  # The webhook needs its own ServiceAccount for the RBAC bindings.
+  create: true
+  # Empty = fullname.
+  name: ""
+  labels: {}
+  annotations: {}
+  # Must be true: the service calls the Kubernetes API (Secrets, TokenReview).
+  automountToken: true
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  # Only rendered with replicaCount > 1: with one replica it would block every node drain.
+  # Alternatively set maxUnavailable (e.g. 1); if present it takes precedence over
+  # minAvailable.
+  minAvailable: 1
+  labels: {}
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy. Disabled by default because the egress targets depend on the environment.
+# Each direction in policyTypes needs at least one rule in ingress/egress; rendering fails
+# otherwise, because an empty list means deny-all and makes the webhook unreachable.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+  labels: {}
+  annotations: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Ingress: the kube-apiserver calls the webhook on webhook.securePort.
+  ingress: []
+  # Egress: DNS, kube-apiserver and the ISPConfig endpoint (443/tcp).
+  egress: []

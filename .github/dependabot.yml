@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        patterns: ["*"]
+    ignore:
+      # cert-manager pins exact k8s.io/* versions. cert-manager patch releases are fine and
+      # pull in what they need; k8s.io/* is only raised together with cert-manager in a
+      # dedicated change (see AGENTS.md, "Coupled versions").
+      - dependency-name: github.com/cert-manager/cert-manager
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: k8s.io/*
+      - dependency-name: sigs.k8s.io/*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # The Go version in the Dockerfile follows go.mod and is raised together with it.
+      - dependency-name: golang
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

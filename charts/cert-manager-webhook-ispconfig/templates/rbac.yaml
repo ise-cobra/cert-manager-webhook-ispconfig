@@ -1,0 +1,111 @@
+{{- if .Values.rbac.create }}
+{{/*
+1. Delegated authentication: the extension API server reads the ConfigMap
+   extension-apiserver-authentication in kube-system. It is read through an informer,
+   hence list/watch in addition to get.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "webhook.authReaderName" . }}
+  namespace: kube-system
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["extension-apiserver-authentication"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "webhook.authReaderName" . }}
+  namespace: kube-system
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "webhook.authReaderName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "webhook.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/*
+2. Delegated authorization: system:auth-delegator covers SubjectAccessReviews and
+   TokenReviews, so no dedicated ClusterRole is needed.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "webhook.authDelegatorName" . }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "webhook.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/*
+3. Resolving tokenSecretRef: read access to Secrets, restricted to individual names via
+   rbac.secretResourceNames (enforced by _validate.yaml).
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "webhook.secretReaderName" . }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    {{- with .Values.rbac.secretResourceNames }}
+    resourceNames:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "webhook.secretReaderName" . }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "webhook.secretReaderName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "webhook.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/*
+4. cert-manager may call the solver: create on the aggregated resource
+   <groupName>/ispconfig, bound to the cert-manager ServiceAccount.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "webhook.domainSolverName" . }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+rules:
+  - apiGroups: [{{ include "webhook.groupName" . | quote }}]
+    resources: ["ispconfig"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "webhook.domainSolverName" . }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "webhook.domainSolverName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ required "certManager.serviceAccountName is required" .Values.certManager.serviceAccountName }}
+    namespace: {{ required "certManager.namespace is required" .Values.certManager.namespace }}
+{{- end }}

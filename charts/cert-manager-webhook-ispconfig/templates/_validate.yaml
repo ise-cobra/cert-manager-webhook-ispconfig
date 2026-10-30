@@ -1,0 +1,48 @@
+{{/*
+Aborts rendering and installation if the values would result in an installation that can
+never work or that grants unrestricted Secret access. Without these guards `helm install`
+succeeds and the failure only shows up in the cluster (pod stuck in ContainerCreating,
+APIService never Available).
+
+Included once at the top of apiservice.yaml. That covers every render path: Helm always
+renders all templates and filters for `--show-only` afterwards.
+*/}}
+{{- define "webhook.validate" -}}
+{{- if empty .Values.service.ports }}
+{{- fail "\n\nservice.ports is empty. The Service needs the port the APIService connects to;\nwithout an entry the installation cannot work.\n" }}
+{{- end }}
+{{- if and .Values.rbac.create (not .Values.serviceAccount.create) (empty .Values.serviceAccount.name) }}
+{{- fail "\n\nserviceAccount.create=false, but serviceAccount.name is empty: the chart's RBAC bindings\nwould point to the namespace's \"default\" ServiceAccount, granting every pod that mounts it\ncluster-wide read access to Secrets.\n\nSet one of:\n  --set serviceAccount.name=<existing ServiceAccount>\n  --set rbac.create=false   (manage RBAC outside the chart)\n" }}
+{{- end }}
+{{- if and .Values.rbac.create (empty .Values.rbac.secretResourceNames) (not .Values.rbac.acknowledgeUnrestrictedSecretAccess) }}
+{{- fail "\n\nrbac.secretResourceNames is empty: the ClusterRole would allow \"get\" on EVERY Secret in the\ncluster. Anyone allowed to create an Issuer chooses via config.endpoint where the webhook sends\na Secret -- without a restriction they could send any hex-valued Secret of the Issuer's\nnamespace (for a ClusterIssuer: of cert-manager's cluster resource namespace) to a host they\ncontrol, even Secrets they cannot read themselves (the webhook holds the read permission).\n\nSet one of:\n  --set rbac.secretResourceNames[0]=<name of the DDNS token Secret>\n  --set rbac.acknowledgeUnrestrictedSecretAccess=true   (deliberate exception)\n" }}
+{{- end }}
+{{- if and (hasPrefix "http://" (lower .Values.webhook.endpoint)) (not .Values.webhook.allowInsecureEndpoint) }}
+{{- fail (printf "\n\nwebhook.endpoint=%q uses http://, which the webhook rejects at startup unless\nwebhook.allowInsecureEndpoint=true. The DDNS token would be sent in clear text.\n\nUse an https:// endpoint, or for development only:\n  --set webhook.allowInsecureEndpoint=true\n" .Values.webhook.endpoint) }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+{{- range $type := .Values.networkPolicy.policyTypes }}
+{{- $rules := get $.Values.networkPolicy (lower $type) }}
+{{- if empty $rules }}
+{{- fail (printf "\n\nnetworkPolicy.enabled=true with policyType %s, but networkPolicy.%s is empty: that means\ndeny-all for this direction. The APIService would never become Available (ingress) or the\nwebhook could not reach the kube-apiserver and ISPConfig (egress).\n\nFill networkPolicy.%s or remove %s from networkPolicy.policyTypes.\n" $type (lower $type) (lower $type) $type) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.webhookTLS.certManager.enabled .Values.webhookTLS.existingSecret }}
+{{- fail (printf "\n\nwebhookTLS.existingSecret=%q is set, but webhookTLS.certManager.enabled is still true (default).\nThe chart's Certificate would then use exactly this Secret as secretName, and cert-manager\nwould overwrite its content with a self-issued certificate.\n\nSet one of:\n  --set webhookTLS.certManager.enabled=false   (use the provided Secret)\n  --set webhookTLS.existingSecret=\"\"           (let cert-manager issue the certificate)\n" .Values.webhookTLS.existingSecret) }}
+{{- end }}
+{{- if not .Values.webhookTLS.certManager.enabled }}
+{{- if not .Values.webhookTLS.existingSecret }}
+{{- fail (printf "\n\nwebhookTLS.certManager.enabled=false, but webhookTLS.existingSecret is empty.\nNo serving certificate would exist: the Deployment mounts the Secret %q that nobody creates,\nand the pods stay in ContainerCreating.\n\nSet one of:\n  --set webhookTLS.existingSecret=<Secret with tls.crt and tls.key in the release namespace>\n  --set webhookTLS.certManager.enabled=true   (default: cert-manager issues the certificate)\n" (include "webhook.servingSecretName" .)) }}
+{{- end }}
+{{- $caInjection := false }}
+{{- range $key, $_ := .Values.apiService.annotations }}
+{{- if contains "inject-ca-from" $key }}
+{{- $caInjection = true }}
+{{- end }}
+{{- end }}
+{{- if and (not .Values.apiService.caBundle) (not $caInjection) }}
+{{- fail (printf "\n\nwebhookTLS.certManager.enabled=false, but there is no CA trust anchor for the APIService %s.\nWithout a caBundle the kube-apiserver does not trust the serving certificate; the APIService\nnever becomes Available and cert-manager cannot call the solver.\n\nSet one of:\n  --set apiService.caBundle=\"$(base64 -w0 < ca.crt)\"   (base64-encoded CA certificate)\n  --set apiService.annotations.\"cert-manager\\.io/inject-ca-from\"=<namespace>/<certificate>\n" (include "webhook.apiServiceName" .)) }}
+{{- end }}
+{{- end }}
+{{- end -}}

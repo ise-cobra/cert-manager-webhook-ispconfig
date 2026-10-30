@@ -1,0 +1,10 @@
+# Allowlist instead of denylist: new files in the repository do not end up in the build
+# context by accident.
+*
+
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!LICENSE
+**/*_test.go

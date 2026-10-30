@@ -1,0 +1,22 @@
+apiVersion: v2
+name: cert-manager-webhook-ispconfig
+version: 0.1.0
+appVersion: 0.1.0
+description: cert-manager DNS01 solver webhook for the ISPConfig DDNS token API
+type: application
+# lifecycle.preStop.sleep is a native kubelet action, beta since Kubernetes 1.30.
+kubeVersion: ">=1.30.0-0"
+home: https://github.com/ise-cobra/cert-manager-webhook-ispconfig
+sources:
+  - https://github.com/ise-cobra/cert-manager-webhook-ispconfig
+maintainers:
+  - name: ise-cobra
+    url: https://github.com/ise-cobra
+keywords:
+  - cert-manager
+  - acme
+  - dns01
+  - ispconfig
+  - webhook
+annotations:
+  artifacthub.io/license: Apache-2.0

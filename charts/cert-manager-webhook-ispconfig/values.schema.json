@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "cert-manager-webhook-ispconfig",
+  "description": "Values schema for the cert-manager-webhook-ispconfig chart. Checks types and formats only; required values without a default (groupName, webhook.endpoint) are enforced by the templates so that helm show values keeps working.",
+  "type": "object",
+  "required": [
+    "groupName",
+    "image",
+    "webhook",
+    "webhookTLS",
+    "apiService",
+    "certManager",
+    "rbac",
+    "service",
+    "serviceAccount"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "global": { "type": "object" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string", "maxLength": 63 },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "labels": { "type": "object" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "lifecycleHooks": { "type": "object" },
+    "groupName": {
+      "type": "string",
+      "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+)?$"
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": {
+          "comment": "helm --set passes purely numeric tags as a number.",
+          "type": ["string", "number"]
+        },
+        "digest": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullSecrets": { "type": "array" }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "required": ["securePort", "httpTimeout"],
+      "additionalProperties": false,
+      "properties": {
+        "securePort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "endpoint": { "type": "string", "pattern": "^(https?://.+)?$" },
+        "httpTimeout": {
+          "description": "Greater than 0 and at most 50s (the webhook rejects larger values), in s or ms.",
+          "type": "string",
+          "pattern": "^(([1-9]|[1-4][0-9]|50)s|([1-9][0-9]{3}|[1-4][0-9]{4}|50000)ms)$"
+        },
+        "allowInsecureEndpoint": { "type": "boolean" },
+        "log": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+            "format": { "type": "string", "enum": ["auto", "json", "text"] }
+          }
+        },
+        "otel": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": { "type": "string" },
+            "insecure": { "type": "boolean" },
+            "sampleRatio": {
+              "comment": "helm --set passes floats as strings, hence both types.",
+              "anyOf": [
+                { "type": "number", "minimum": 0, "maximum": 1 },
+                { "type": "string", "pattern": "^(0(\\.[0-9]+)?|1(\\.0+)?)$" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "webhookTLS": {
+      "type": "object",
+      "required": ["mountPath", "certManager"],
+      "properties": {
+        "mountPath": { "type": "string", "pattern": "^/" },
+        "existingSecret": { "type": "string" },
+        "certManager": {
+          "type": "object",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "privateKey": {
+              "type": "object",
+              "properties": {
+                "algorithm": { "type": "string", "enum": ["RSA", "ECDSA", "Ed25519"] },
+                "size": { "type": "integer" }
+              }
+            },
+            "ca": {
+              "type": "object",
+              "properties": {
+                "duration": { "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$" },
+                "renewBefore": { "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$" }
+              }
+            },
+            "serving": {
+              "type": "object",
+              "properties": {
+                "duration": { "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$" },
+                "renewBefore": { "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apiService": {
+      "type": "object",
+      "required": ["groupPriorityMinimum", "versionPriority"],
+      "properties": {
+        "groupPriorityMinimum": { "type": "integer", "minimum": 1 },
+        "versionPriority": { "type": "integer", "minimum": 1 },
+        "caBundle": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+    "certManager": {
+      "type": "object",
+      "required": ["namespace", "serviceAccountName"],
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1 },
+        "serviceAccountName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "required": ["create"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "secretResourceNames": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "acknowledgeUnrestrictedSecretAccess": { "type": "boolean" }
+      }
+    },
+    "podSpread": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "topologyKey": { "type": "string", "minLength": 1 },
+        "whenUnsatisfiable": { "type": "string", "enum": ["DoNotSchedule", "ScheduleAnyway"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["ports"],
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "port", "targetPort"],
+            "properties": {
+              "name": { "type": "string" },
+              "port": { "type": "integer" },
+              "targetPort": { "type": ["string", "integer"] },
+              "protocol": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "required": ["create", "automountToken"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "automountToken": { "type": "boolean" }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": ["integer", "string"] },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "resources": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "containerSecurityContext": { "type": "object" },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" },
+    "startupProbe": { "type": "object" },
+    "volumes": { "type": "array" },
+    "volumeMounts": { "type": "array" },
+    "extraEnvVars": { "type": "array" },
+    "topologySpreadConstraints": { "type": "array" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "networkPolicy": { "type": "object" },
+    "commonLabels": { "type": "object" },
+    "commonAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podAnnotations": { "type": "object" },
+    "priorityClassName": { "type": "string" },
+    "terminationGracePeriodSeconds": {
+      "description": "Must cover the preStop sleep, the longest challenge (55s) and the telemetry flush (5s).",
+      "type": "integer",
+      "minimum": 65
+    }
+  }
+}

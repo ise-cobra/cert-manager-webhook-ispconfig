@@ -1,0 +1,73 @@
+{{- if .Values.webhookTLS.certManager.enabled }}
+{{/*
+Serving certificate of the webhook. A chart-owned self-signed CA is sufficient: the only
+trust anchor is the caBundle of the APIService, which cert-manager injects via the
+cert-manager.io/inject-ca-from annotation.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "webhook.selfSignedIssuerName" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "webhook.caName" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+spec:
+  isCA: true
+  {{- /* webhook.caName stays within 63 characters; cert-manager rejects a commonName above 64. */}}
+  commonName: {{ include "webhook.caName" . | quote }}
+  secretName: {{ include "webhook.caName" . }}
+  duration: {{ .Values.webhookTLS.certManager.ca.duration | quote }}
+  renewBefore: {{ .Values.webhookTLS.certManager.ca.renewBefore | quote }}
+  privateKey:
+    algorithm: {{ .Values.webhookTLS.certManager.privateKey.algorithm | quote }}
+    size: {{ .Values.webhookTLS.certManager.privateKey.size }}
+    rotationPolicy: Always
+  issuerRef:
+    name: {{ include "webhook.selfSignedIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "webhook.caName" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+spec:
+  ca:
+    secretName: {{ include "webhook.caName" . }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "webhook.servingCertificateName" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . dict dict) | nindent 2 }}
+spec:
+  secretName: {{ include "webhook.servingSecretName" . }}
+  duration: {{ .Values.webhookTLS.certManager.serving.duration | quote }}
+  renewBefore: {{ .Values.webhookTLS.certManager.serving.renewBefore | quote }}
+  privateKey:
+    algorithm: {{ .Values.webhookTLS.certManager.privateKey.algorithm | quote }}
+    size: {{ .Values.webhookTLS.certManager.privateKey.size }}
+    rotationPolicy: Always
+  usages:
+    - server auth
+  dnsNames:
+    - {{ include "webhook.fullname" . | quote }}
+    - {{ printf "%s.%s" (include "webhook.fullname" .) .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc" (include "webhook.fullname" .) .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc.cluster.local" (include "webhook.fullname" .) .Release.Namespace | quote }}
+  issuerRef:
+    name: {{ include "webhook.caName" . }}
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}

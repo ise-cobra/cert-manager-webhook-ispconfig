@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . .Values.deployment.labels .Values.deployment.annotations) | nindent 2 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with merge (dict) (.Values.podAnnotations | default dict) (.Values.commonAnnotations | default dict) }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- /* Selector labels win over podLabels/commonLabels, otherwise pods would not match. */}}
+        {{- toYaml (merge (include "webhook.selectorLabels" . | fromYaml) (.Values.podLabels | default dict) (.Values.commonLabels | default dict)) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "webhook.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /*
+      Only topologySpreadConstraints, no additional podAntiAffinity: both would spread the
+      replicas softly over the same topologyKey, but with different opt-out conditions.
+      */}}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- else if .Values.podSpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: {{ .Values.podSpread.topologyKey | quote }}
+          whenUnsatisfiable: {{ .Values.podSpread.whenUnsatisfiable | quote }}
+          labelSelector:
+            matchLabels:
+              {{- include "webhook.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "webhook.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- /*
+          The service is configured exclusively via environment variables: every flag has
+          exactly one env var source. extraEnvVars come first, so for a duplicate name the
+          chart's own entry (the last one) wins.
+          */}}
+          env:
+            {{- with .Values.extraEnvVars }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: GROUP_NAME
+              value: {{ include "webhook.groupName" . | quote }}
+            - name: SECURE_PORT
+              value: {{ .Values.webhook.securePort | quote }}
+            - name: TLS_CERT_FILE
+              value: {{ printf "%s/tls.crt" (trimSuffix "/" .Values.webhookTLS.mountPath) | quote }}
+            - name: TLS_PRIVATE_KEY_FILE
+              value: {{ printf "%s/tls.key" (trimSuffix "/" .Values.webhookTLS.mountPath) | quote }}
+            - name: ISPCONFIG_ENDPOINT
+              value: {{ required "webhook.endpoint is required: base URL of the ISPConfig DDNS API, e.g. https://ispconfig.example.com" .Values.webhook.endpoint | quote }}
+            - name: ISPCONFIG_HTTP_TIMEOUT
+              value: {{ required "webhook.httpTimeout is required" .Values.webhook.httpTimeout | quote }}
+            - name: ISPCONFIG_ALLOW_INSECURE_ENDPOINT
+              value: {{ .Values.webhook.allowInsecureEndpoint | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.webhook.log.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.webhook.log.format | quote }}
+            {{- with .Values.webhook.otel.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ $.Values.webhook.otel.insecure | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ $.Values.webhook.otel.sampleRatio | quote }}
+            {{- end }}
+          {{- /* Derived from webhook.securePort so that port and SECURE_PORT never diverge. */}}
+          ports:
+            - name: https
+              containerPort: {{ .Values.webhook.securePort }}
+              protocol: TCP
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.lifecycleHooks }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- /* The tmp volume is required because readOnlyRootFilesystem is set. */}}
+          volumeMounts:
+            - name: webhook-tls
+              mountPath: {{ .Values.webhookTLS.mountPath | quote }}
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: webhook-tls
+          secret:
+            secretName: {{ include "webhook.servingSecretName" . | quote }}
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

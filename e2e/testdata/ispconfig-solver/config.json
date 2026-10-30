@@ -1,0 +1,9 @@
+{
+  "endpoint": "http://127.0.0.1:1",
+  "tokenSecretRef": {
+    "name": "ispconfig-ddns-token",
+    "key": "token"
+  },
+  "httpTimeout": "10s",
+  "tokenAuthMode": "basic"
+}

@@ -1,0 +1,53 @@
+{{- $secretName := first .Values.rbac.secretResourceNames | default "ispconfig-ddns-token" -}}
+{{ .Chart.Name }} {{ .Chart.Version }} has been installed in namespace {{ .Release.Namespace }}.
+
+API group  : {{ .Values.groupName }}
+Solver name: ispconfig
+APIService : {{ include "webhook.apiServiceName" . }}
+Service    : {{ include "webhook.fullname" . }}:{{ (first .Values.service.ports).port }}
+
+Next steps:
+
+1. Check that the extension API server is registered (must report "True"):
+
+     kubectl get apiservice {{ include "webhook.apiServiceName" . }} \
+       -o jsonpath='{.status.conditions[?(@.type=="Available")].status}{"\n"}'
+{{- if .Values.webhookTLS.certManager.enabled }}
+
+2. Check the serving certificate:
+
+     kubectl -n {{ .Release.Namespace }} get certificate {{ include "webhook.servingCertificateName" . }}
+{{- else }}
+
+2. The Secret {{ include "webhook.servingSecretName" . }} with tls.crt/tls.key must exist in
+   namespace {{ .Release.Namespace }}.
+{{- end }}
+
+3. Create the Secret holding the DDNS token. For a ClusterIssuer it belongs in cert-manager's
+   cluster resource namespace (usually {{ .Values.certManager.namespace }}), for an Issuer in
+   the issuer's namespace:
+
+     kubectl -n {{ .Values.certManager.namespace }} create secret generic {{ $secretName }} \
+       --from-literal=token='<DDNS-TOKEN>'
+{{- if and .Values.rbac.create (not .Values.rbac.secretResourceNames) }}
+
+   Warning: rbac.secretResourceNames is empty and rbac.acknowledgeUnrestrictedSecretAccess
+   is set, so the webhook may read every Secret in the cluster. Restrict it to the Secret
+   names you actually use as soon as possible.
+{{- end }}
+
+4. Create a ClusterIssuer that uses the solver:
+
+     solvers:
+       - dns01:
+           webhook:
+             groupName: {{ .Values.groupName }}
+             solverName: ispconfig
+             config:
+               tokenSecretRef:
+                 name: {{ $secretName }}
+                 key: token
+
+5. The DDNS API takes about a minute until the TXT record has propagated; the first
+   self checks of cert-manager are expected to fail. If the authoritative nameservers are not
+   reachable from the cluster, see "Propagation time" in the chart README.

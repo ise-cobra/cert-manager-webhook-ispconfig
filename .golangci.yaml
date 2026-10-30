@@ -1,0 +1,32 @@
+# golangci-lint configuration
+# Reference: https://golangci-lint.run/docs/linters/
+version: "2"
+run:
+  # Without this tag the linter skips e2e/ entirely and the conformance suite, which CI does
+  # not run, would silently rot until someone compiles it locally.
+  build-tags:
+    - e2e
+linters:
+  default: standard
+  enable:
+    - usestdlibvars
+    - usetesting
+    - unconvert
+    - nilerr
+    - intrange
+    - ineffassign
+    - gosec
+    - dupl
+    - forbidigo
+    - contextcheck
+  settings:
+    gosec:
+      excludes:
+      # https://golangci-lint.run/docs/linters/configuration/#gosec
+      - G304
+    forbidigo:
+      forbid:
+        - pattern: '^log\..*$'
+          msg: "please use 'slog' for output."
+        - pattern: '^fmt\.Print.*$'
+          msg: "please use 'slog' for output."

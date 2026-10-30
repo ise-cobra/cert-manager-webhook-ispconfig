@@ -1,0 +1,31 @@
+{{/*
+Registers the webhook as an extension API server. cert-manager reaches the solver only
+through this aggregation layer resource.
+
+webhook.validate aborts here if the configuration would result in an installation that can
+never work (see _validate.yaml).
+*/}}
+{{- include "webhook.validate" . -}}
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: {{ include "webhook.apiServiceName" . }}
+  {{- $annotations := deepCopy (.Values.apiService.annotations | default dict) }}
+  {{- if .Values.webhookTLS.certManager.enabled }}
+  {{- $_ := set $annotations "cert-manager.io/inject-ca-from" (printf "%s/%s" .Release.Namespace (include "webhook.servingCertificateName" .)) }}
+  {{- end }}
+  {{- include "webhook.metadata" (list . dict $annotations) | nindent 2 }}
+spec:
+  group: {{ include "webhook.groupName" . | quote }}
+  version: v1alpha1
+  groupPriorityMinimum: {{ .Values.apiService.groupPriorityMinimum }}
+  versionPriority: {{ .Values.apiService.versionPriority }}
+  {{- if and (not .Values.webhookTLS.certManager.enabled) .Values.apiService.caBundle }}
+  caBundle: {{ .Values.apiService.caBundle | quote }}
+  {{- end }}
+  service:
+    name: {{ include "webhook.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+    # Derived from the Service values instead of hard-coded: spec.service.port must match the
+    # Service port, otherwise the APIService never becomes Available.
+    port: {{ (first .Values.service.ports).port }}

@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The release workflow runs the same checks before publishing anything.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only superseded pull request runs are cancelled; every commit on main gets a full result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CHART_DIR: charts/cert-manager-webhook-ispconfig
+  # Tool versions are maintained by hand (Dependabot does not track them); HELM_VERSION is
+  # also set in release.yml.
+  HELM_VERSION: v3.22.1
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  GOVULNCHECK_VERSION: v1.9.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Check Go version in go.mod and Dockerfile match
+        run: |
+          mod="$(awk '/^go /{print $2}' go.mod)"
+          docker="$(sed -nE 's/^FROM .*golang:([0-9.]+).*/\1/p' Dockerfile)"
+          echo "go.mod: $mod, Dockerfile: $docker"
+          test "$mod" = "$docker"
+      # Dependency updates must not move the coupled cert-manager/k8s.io versions (AGENTS.md).
+      - name: Check module graph
+        run: |
+          go mod tidy -diff
+          cm="$(go list -m -f '{{.Version}}' github.com/cert-manager/cert-manager)"
+          echo "cert-manager: $cm"
+          grep -Eq '^v1\.20\.[0-9]+$' <<<"$cm"
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -race -coverprofile=coverage.out ./...
+      - name: Coverage of production code (test double excluded) must be at least 80 %
+        run: |
+          grep -v '/ddnstest/' coverage.out > coverage.prod.out
+          total="$(go tool cover -func=coverage.prod.out | awk '/^total:/{sub("%","",$NF); print $NF}')"
+          echo "coverage: ${total} %"
+          awk -v t="$total" 'BEGIN { exit !(t >= 80) }'
+
+  # Not golang/govulncheck-action: it passes go-version-input "stable" to setup-go, which then
+  # wins over go-version-file and scans a different standard library than the one shipped.
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        run: |
+          curl -fsSLo kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/
+      - name: Lint, render and validate
+        run: |
+          base=(
+            --set groupName=acme.example.com
+            --set webhook.endpoint=https://ispconfig.example.com
+          )
+          helm lint --strict "$CHART_DIR" "${base[@]}"
+          validate() {
+            echo "== $1"; shift
+            # cert-manager resources have no schema in the default catalog and are skipped.
+            helm template "$@" \
+              | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.30.0
+          }
+          validate "defaults" ci "$CHART_DIR" "${base[@]}"
+          validate "long release name" abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabc \
+            "$CHART_DIR" "${base[@]}"
+          validate "external TLS, single replica, NetworkPolicy" ci "$CHART_DIR" "${base[@]}" \
+            --set webhookTLS.certManager.enabled=false --set webhookTLS.existingSecret=tls \
+            --set apiService.caBundle=Zm9v --set replicaCount=1 \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.ingress[0].ports[0].port=8443' \
+            --set 'networkPolicy.egress[0].ports[0].port=443'
+          validate "maxUnavailable" ci "$CHART_DIR" "${base[@]}" --set podDisruptionBudget.maxUnavailable=1
+      # helm lint does not report template `fail` calls, so each guard is checked here, including
+      # the reason, so that a guard that disappears cannot hide behind an unrelated failure.
+      - name: Rendering fails for invalid values
+        run: |
+          base=(
+            --set groupName=acme.example.com
+            --set webhook.endpoint=https://ispconfig.example.com
+          )
+          expect_fail() {
+            local name="$1" want="$2" out; shift 2
+            if out="$(helm template ci "$CHART_DIR" "$@" 2>&1)"; then
+              echo "::error::rendered although invalid: $name"; return 1
+            fi
+            if ! grep -qF -- "$want" <<<"$out"; then
+              echo "::error::$name failed for another reason:"; echo "$out"; return 1
+            fi
+            echo "ok: $name"
+          }
+          rc=0
+          expect_fail "missing groupName" "groupName is required" \
+            --set webhook.endpoint=https://ispconfig.example.com || rc=1
+          expect_fail "missing webhook.endpoint" "webhook.endpoint is required" \
+            --set groupName=acme.example.com || rc=1
+          expect_fail "unrestricted secret access" "rbac.secretResourceNames is empty" \
+            "${base[@]}" --set-json 'rbac.secretResourceNames=[]' || rc=1
+          expect_fail "default ServiceAccount" "serviceAccount.name is empty" \
+            "${base[@]}" --set serviceAccount.create=false || rc=1
+          expect_fail "existingSecret with cert-manager" "certManager.enabled is still true" \
+            "${base[@]}" --set webhookTLS.existingSecret=x || rc=1
+          expect_fail "no TLS source" "existingSecret is empty" \
+            "${base[@]}" --set webhookTLS.certManager.enabled=false || rc=1
+          expect_fail "no CA trust anchor" "no CA trust anchor" \
+            "${base[@]}" --set webhookTLS.certManager.enabled=false --set webhookTLS.existingSecret=x || rc=1
+          expect_fail "deny-all NetworkPolicy" "networkPolicy.ingress is empty" \
+            "${base[@]}" --set networkPolicy.enabled=true || rc=1
+          expect_fail "http endpoint" "uses http://" \
+            "${base[@]}" --set webhook.endpoint=http://ispconfig.example.com || rc=1
+          expect_fail "httpTimeout above cap" "/webhook/httpTimeout" \
+            "${base[@]}" --set webhook.httpTimeout=90s || rc=1
+          expect_fail "httpTimeout below 1s" "/webhook/httpTimeout" \
+            "${base[@]}" --set webhook.httpTimeout=1ms || rc=1
+          expect_fail "unknown value" "additional properties 'serviceMonitor'" \
+            "${base[@]}" --set serviceMonitor.enabled=true || rc=1
+          exit "$rc"
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          # Only here, not in the release workflow: releases are built without a shared cache.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

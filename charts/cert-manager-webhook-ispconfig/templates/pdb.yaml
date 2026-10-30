@@ -1,0 +1,18 @@
+{{- /* With a single replica, minAvailable: 1 would block every node drain. */}}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "webhook.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  {{- include "webhook.metadata" (list . .Values.podDisruptionBudget.labels .Values.podDisruptionBudget.annotations) | nindent 2 }}
+spec:
+  {{- if hasKey .Values.podDisruptionBudget "maxUnavailable" }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "webhook.selectorLabels" . | nindent 6 }}
+{{- end }}

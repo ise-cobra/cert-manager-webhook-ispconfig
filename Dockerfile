@@ -2,7 +2,7 @@
 
 # Build stage runs on the build host and cross-compiles for the target platform, so
 # multi-arch images need no emulation.
-FROM --platform=$BUILDPLATFORM golang:1.26.10@sha256:75bb407eabe887b4fe370e1c6176d4a26cc728338a12cc361f400715ed9577ad AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10@sha256:670bb5aa5349ae03b8516764718486f4f16399134bdc9acd0c46a23f043ab05c AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
